@@ -22,6 +22,8 @@ class LayerNorm(nn.Module):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(ndim))
         self.bias = nn.Parameter(torch.zeros(ndim)) if bias else None
+        self.to('cuda0')
+        self.to('cuda1')
 
     def forward(self, input):
         return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
@@ -48,6 +50,9 @@ class CausalSelfAttention(nn.Module):
             # causal mask to ensure that attention is only applied to the left in the input sequence
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
+        self.to('cuda0')
+        self.to('cuda1')
+
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
@@ -83,6 +88,8 @@ class MLP(nn.Module):
         self.gelu    = nn.GELU()
         self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
+        self.to('cuda0')
+        self.to('cuda1')
 
     def forward(self, x):
         x = self.c_fc(x)
@@ -99,6 +106,8 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
+        self.to('cuda0')
+        self.to('cuda1')
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
@@ -180,6 +189,8 @@ class GPT(nn.Module):
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)
+        x.to('cuda0')
+        x.to('cuda1')
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
