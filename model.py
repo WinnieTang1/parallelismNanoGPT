@@ -226,18 +226,18 @@ class GPT(nn.Module):
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
 
     def par_ref(self):
-        par_ref = []
-        par_ref.extend(par_rref(self.transformer.wte))
-        par_ref.extend(par_rref(self.transformer.wpe))
-        par_ref.extend(par_rref(self.transformer.drop))
+        par_refs = []
+        par_refs.extend(par_rref(self.transformer.wte))
+        par_refs.extend(par_rref(self.transformer.wpe))
+        par_refs.extend(par_rref(self.transformer.drop))
         for i in self.transformer.hlocal:
-            par_ref.extend(par_rref(i))
+            par_refs.extend(par_rref(i))
 
         if (self.remoteStatus):
-            par_ref.extend(rpc.rpc_sync(self.ps, pars_from_list, args=(self.remote,)))
-        par_ref.extend(par_rref(self.transformer.ln_f))
-        par_ref.extend(par_rref(self.lm_head))
-        return par_ref
+            par_refs.extend(rpc.rpc_sync(self.ps, pars_from_list, args=(self.remote,)))
+        par_refs.extend(par_rref(self.transformer.ln_f))
+        par_refs.extend(par_rref(self.lm_head))
+        return par_refs
 
 
     def get_num_params(self, non_embedding=True):

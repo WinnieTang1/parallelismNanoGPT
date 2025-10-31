@@ -225,7 +225,7 @@ def run_trainer(rank, world_size):
     # optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
     optimizer = DistributedOptimizer(
         torch.optim.AdamW,
-        model.par_rref(),
+        model.par_ref(),
         lr=learning_rate,
         weight_decay=weight_decay,
         betas=(beta1, beta2),
