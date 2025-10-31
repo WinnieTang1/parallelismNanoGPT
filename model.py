@@ -24,16 +24,11 @@ import torch.optim as optim
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
 
-    def __init__(self, ndim, num_gpus, bias):
+    def __init__(self, ndim, bias):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(ndim))
         self.bias = nn.Parameter(torch.zeros(ndim)) if bias else None
-        # for splitting across
-        for i in range(num_gpus):
-            if i == 1:
-                self.layernorm=rpc.remote("driver")
-            else:
-                self.layernorm=rpc.remote(f"worker{i}")
+
 
 
 
@@ -42,7 +37,7 @@ class LayerNorm(nn.Module):
 
 class CausalSelfAttention(nn.Module):
 
-    def __init__(self, config, num_gpus):
+    def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         # key, query, value projections for all heads, but in a batch
@@ -62,11 +57,7 @@ class CausalSelfAttention(nn.Module):
             # causal mask to ensure that attention is only applied to the left in the input sequence
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
-        for i in range(num_gpus):
-            if i == 1:
-                self.csatten=rpc.remote("driver")
-            else:
-                self.csatten=rpc.remote(f"worker{i}")
+
 
 
     def forward(self, x):
@@ -97,17 +88,13 @@ class CausalSelfAttention(nn.Module):
 
 class MLP(nn.Module):
 
-    def __init__(self, config, num_gpus):
+    def __init__(self, config):
         super().__init__()
         self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
         self.gelu    = nn.GELU()
         self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
-        for i in range(num_gpus):
-            if i == 1:
-                self.mlp=rpc.remote("driver")
-            else:
-                self.mlp=rpc.remote(f"worker{i}")
+
 
     def forward(self, x):
         x = self.c_fc(x)
@@ -118,22 +105,60 @@ class MLP(nn.Module):
 
 class Block(nn.Module):
 
-    def __init__(self, config, num_gpus):
+    def __init__(self, config):
         super().__init__()
-        self.ln_1 = LayerNorm(config.n_embd, num_gpus, bias=config.bias)
-        self.attn = CausalSelfAttention(config, num_gpus)
-        self.ln_2 = LayerNorm(config.n_embd, num_gpus, bias=config.bias)
-        self.mlp = MLP(config, num_gpus)
-        for i in range(num_gpus):
-            if i == 1:
-                self.block=rpc.remote("driver")
-            else:
-                self.block=rpc.remote(f"worker{i}")
+        self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
+        self.attn = CausalSelfAttention(config)
+        self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
+        self.mlp = MLP(config)
+        # for i in range(num_gpus):
+        #     if i == 1:
+        #         self.block=rpc.remote("driver")
+        #     else:
+        #         self.block=rpc.remote(f"worker{i}")
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
+
+# I REALLY HOPE THIS WORKS
+def par_rref(block):
+    pars = []
+    for i in block.parameters():
+        pars.append(rpc.RRef(i))
+    return pars
+
+def buildBlocks(config,dist):
+    modulelist = []
+    for i in dist:
+        device=torch.device('cuda',i % 4)
+        modulelist = nn.ModuleList([Block(config).to(device)])
+
+    return modulelist
+
+def forwardBlocks(list, x, dist):
+    counter = 0
+    for block in list.to_here(): 
+        x = block(x.to(device=torch.device('cuda',dist[counter])))
+        counter += 1
+    return x.to(device=torch.device('cpu'))
+
+
+
+def pars_from_list(list):
+    pars = []
+    for i in list.to_here():
+        # pars.append()
+        pars.extend(pars(i))
+    return pars
+
+
+
+
+
+
+
 
 @dataclass
 class GPTConfig:
@@ -144,22 +169,44 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    n_gpu: int = 4
 
 class GPT(nn.Module):
 
-    def __init__(self, config, num_gpus):
+    def __init__(self, config, ps):
         super().__init__()
         assert config.vocab_size is not None
         assert config.block_size is not None
         self.config = config
 
+
+
+        numlayer = range(config.n_layer)
+        self.spread = list(map(lambda i: int(i*config.n_gpu/config.n_layer), numlayer))
+        local = 4*config.n_layer//config.n_gpu
+
+        self.ps = ps
+
+
+    
+
+
+
         self.transformer = nn.ModuleDict(dict(
-            wte = nn.Embedding(config.vocab_size, config.n_embd),
-            wpe = nn.Embedding(config.block_size, config.n_embd),
-            drop = nn.Dropout(config.dropout),
-            h = nn.ModuleList([Block(config, num_gpus) for _ in range(config.n_layer)]),
-            ln_f = LayerNorm(config.n_embd, bias=config.bias),
+            wte = nn.Embedding(config.vocab_size, config.n_embd).to(device=torch.device('cuda:0')),
+            wpe = nn.Embedding(config.block_size, config.n_embd).to(device=torch.device('cuda:0')),
+            drop = nn.Dropout(config.dropout).to(device=torch.device('cuda:0')),
+            hlocal = buildBlocks(config, self.spread[0:local]),
+            ln_f = LayerNorm(config.n_embd, bias=config.bias).to(device=torch.device('cuda:0')),
         ))
+
+        if (local<config.n_layer):
+            self.remote = rpc.remote(self.ps, buildBlocks, args=(config, self.gpuSpread[local:]))
+            self.remoteStatus = True
+        else:
+            self.remote = None
+            self.remoteStatus = False
+
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
@@ -176,6 +223,21 @@ class GPT(nn.Module):
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
+
+    def par_ref(self):
+        par_ref = []
+        par_ref.extend(par_rref(self.transformer.wte))
+        par_ref.extend(par_rref(self.transformer.wpe))
+        par_ref.extend(par_rref(self.transformer.drop))
+        for i in self.transformer.hlocal:
+            par_ref.extend(par_rref(i))
+
+        if (self.remoteStatus):
+            par_ref.extend(rpc.rpc_sync(self.ps, pars_from_list, args=(self.hRemote,)))
+        par_ref.extend(par_rref(self.transformer.ln_f))
+        par_ref.extend(par_rref(self.lm_head))
+        return par_ref
+
 
     def get_num_params(self, non_embedding=True):
         """
@@ -210,8 +272,7 @@ class GPT(nn.Module):
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)
-        # x.to('cuda0')
-        # x.to('cuda1')
+        
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
@@ -362,10 +423,10 @@ class GPT(nn.Module):
         return idx
 
 
-class RemoteGPT(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.model = GPT(config).to("cuda")
+# class RemoteGPT(nn.Module):
+#     def __init__(self, config):
+#         super().__init__()
+#         self.model = GPT(config).to("cuda")
 
-    def forward(self, idx, targets=None):
-        return self.model(idx, targets)
+#     def forward(self, idx, targets=None):
+#         return self.model(idx, targets)
