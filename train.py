@@ -400,7 +400,7 @@ def run_worker(rank, world_size):
         rpc.init_rpc("trainer", rank=rank, world_size=world_size)
         run_trainer(rank, world_size)
     else:
-        rpc.init_rpc(f"ps"{rank}, rank=rank, world_size=world_size)
+        rpc.init_rpc(f"ps{rank}", rank=rank, world_size=world_size)
         # parameter server do nothing
         pass
 
