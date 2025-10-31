@@ -130,11 +130,13 @@ def par_rref(block):
     return pars
 
 def buildBlocks(config,dist):
-    modulelist = []
-    for i in dist:
-        device=torch.device('cuda',i % 4)
-        modulelist.append(nn.ModuleList([Block(config).to(device=device)])) 
-    return modulelist
+    # modulelist = []
+    # for i in dist:
+    #     device=torch.device('cuda',i % 4)
+    #     modulelist.append(nn.ModuleList([Block(config).to(device=device)])) 
+    # return modulelist
+    return nn.ModuleList([Block(config).to(device=torch.device('cuda', i%4)) for i in dist])
+
 
 def forwardBlocks(list, x, dist):
     counter = 0
