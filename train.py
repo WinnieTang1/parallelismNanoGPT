@@ -84,7 +84,7 @@ exec(open('configurator.py').read()) # overrides from command line or config fil
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 
-## bad code please ignore
+## not working please ignore
 #Parser to take parameters in for the number of gpus
 # parser = argparse.ArgumentParser(
 #     description="RPC NanoGPT",
@@ -108,18 +108,27 @@ config = {k: globals()[k] for k in config_keys} # will be useful for logging
 #     world_size = 2
 #     mp.spawn(run_worker, args=(world_size,), nprocs=world_size, join=True)
 
-def _run_trainer(rank, world_size):
+rank = 1
+world_size=1
+try:    
+    rank = int(os.environ['RANK'])
+    world_size = int(os.environ['WORLD_SIZE'])
+except:
+    pass
+
+def run_trainer(rank, world_size):
     seed_offset = 0
     tokens_per_iter = gradient_accumulation_steps  * batch_size * block_size
     print(f"tokens per iteration will be: {tokens_per_iter:,}")
     
-    if (rank ==1):
+    if (rank == 1):
         master_process = True
     else:
         master_process = False
     
     if master_process:
         os.makedirs(out_dir, exist_ok=True)
+
     torch.manual_seed(1337 + seed_offset)
     torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
     torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
@@ -171,7 +180,7 @@ def _run_trainer(rank, world_size):
             print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
         model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
         gptconf = GPTConfig(**model_args)
-        model = GPT(gptconf, )
+        model = GPT(gptconf, 'ps')
     elif init_from == 'resume':
         print(f"Resuming training from {out_dir}")
         # resume training from a checkpoint.
@@ -384,11 +393,11 @@ def _run_trainer(rank, world_size):
 
 # # glue code
 def run_worker(rank, world_size):
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '29500'
+    # os.environ['MASTER_ADDR'] = 'localhost'
+    # os.environ['MASTER_PORT'] = '29500'
     if rank == 1:
         rpc.init_rpc("trainer", rank=rank, world_size=world_size)
-        _run_trainer(rank, world_size)
+        run_trainer(rank, world_size)
     else:
         rpc.init_rpc("ps", rank=rank, world_size=world_size)
         # parameter server do nothing
@@ -402,8 +411,6 @@ def run_worker(rank, world_size):
 #     world_size = 2
 #     mp.spawn(run_worker, args=(world_size, ), nprocs=world_size, join=True)
 
-rank = int(os.environ['RANK'])
-world_size = int(os.environ['WORLD_SIZE'])
 run_worker(rank, world_size)
 
 
