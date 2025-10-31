@@ -275,7 +275,7 @@ class GPT(nn.Module):
 
 
         if (self.remoteStatus):
-            x = rpc.rpc_sync(self.ps, forwardBlocks, args=(self.remote, x.to(device=torch.device('cpu')), self.spread[i:])))
+            x = rpc.rpc_sync(self.ps, forwardBlocks, args=(self.remote, x.to(device=torch.device('cpu')), self.spread[i:]))
         x = self.transformer.ln_f(x)
         
 
