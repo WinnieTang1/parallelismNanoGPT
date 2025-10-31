@@ -14,23 +14,33 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import argparse
+import torch.distributed.rpc as rpc
+from torch.distributed.rpc import RRef, rpc_async, remote
+import torch.optim as optim
+
+
 
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
 
-    def __init__(self, ndim, bias):
+    def __init__(self, ndim, num_gpus, bias):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(ndim))
         self.bias = nn.Parameter(torch.zeros(ndim)) if bias else None
-        self.to('cuda0')
-        self.to('cuda1')
+        # for splitting across 2 gpus
+        for i in range(num_gpus):
+            torch.cuda.set_device(i)
+            self.layernorm=rpc.remote(torch.cuda.get_device_name(i))
+
+
 
     def forward(self, input):
         return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
 
 class CausalSelfAttention(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, num_gpus):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         # key, query, value projections for all heads, but in a batch
@@ -50,8 +60,9 @@ class CausalSelfAttention(nn.Module):
             # causal mask to ensure that attention is only applied to the left in the input sequence
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
-        self.to('cuda0')
-        self.to('cuda1')
+        for i in range(num_gpus):
+            torch.cuda.set_device(i)
+            self.csatten=rpc.remote()
 
 
     def forward(self, x):
@@ -82,14 +93,15 @@ class CausalSelfAttention(nn.Module):
 
 class MLP(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, num_gpus):
         super().__init__()
         self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
         self.gelu    = nn.GELU()
         self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
-        self.to('cuda0')
-        self.to('cuda1')
+        for i in range(num_gpus):
+            torch.cuda.set_device(i)
+            self.mlp=rpc.remote(torch.cuda.get_device_name(i))
 
     def forward(self, x):
         x = self.c_fc(x)
@@ -100,14 +112,15 @@ class MLP(nn.Module):
 
 class Block(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, num_gpus):
         super().__init__()
-        self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
-        self.attn = CausalSelfAttention(config)
-        self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
-        self.mlp = MLP(config)
-        self.to('cuda0')
-        self.to('cuda1')
+        self.ln_1 = LayerNorm(config.n_embd, num_gpus, bias=config.bias)
+        self.attn = CausalSelfAttention(config, num_gpus)
+        self.ln_2 = LayerNorm(config.n_embd, num_gpus, bias=config.bias)
+        self.mlp = MLP(config, num_gpus)
+        for i in range(num_gpus):
+            torch.cuda.set_device(i)
+            self.block=rpc.remote(torch.cuda.get_device_name(i))
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
@@ -126,7 +139,7 @@ class GPTConfig:
 
 class GPT(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, num_gpus):
         super().__init__()
         assert config.vocab_size is not None
         assert config.block_size is not None
@@ -136,7 +149,7 @@ class GPT(nn.Module):
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            h = nn.ModuleList([Block(config, num_gpus) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -189,8 +202,8 @@ class GPT(nn.Module):
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)
-        x.to('cuda0')
-        x.to('cuda1')
+        # x.to('cuda0')
+        # x.to('cuda1')
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
@@ -339,3 +352,12 @@ class GPT(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)
 
         return idx
+
+
+class RemoteGPT(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.model = GPT(config).to("cuda")
+
+    def forward(self, idx, targets=None):
+        return self.model(idx, targets)

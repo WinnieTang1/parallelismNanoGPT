@@ -26,6 +26,10 @@ import numpy as np
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
+import argparse
+import torch.distributed.rpc as rpc
+from torch.distributed.rpc import RRef, rpc_async, remote
+import torch.optim as optim
 
 from model import GPTConfig, GPT
 
@@ -77,6 +81,26 @@ config_keys = [k for k,v in globals().items() if not k.startswith('_') and isins
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
+
+#Parser to take parameters in for the number of gpus
+parser = argparse.ArgumentParser(
+    description="RPC NanoGPT",
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+)
+
+parser.add_argument('--model_parallel', default=1, type=int, metavar='W', help='number of workers you want to parallelize')
+args = parser.parse_args()
+
+for i in range(args.W){
+    rpc.init_rpc(f"worker{i}", backend=None, rank=i, world_size=args.W, rpc_backend_options=None)
+}
+num_gpus = args.W
+
+
+# if __name__ == "__main__":
+#     import torch.multiprocessing as mp
+#     world_size = 2
+#     mp.spawn(run_worker, args=(world_size,), nprocs=world_size, join=True)
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -334,3 +358,26 @@ while True:
 
 if ddp:
     destroy_process_group()
+
+
+# glue code
+def run_worker(rank, world_size):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '29500'
+    if rank == 1:
+        rpc.init_rpc("trainer", rank=rank, world_size=world_size)
+        _run_trainer()
+    else:
+        rpc.init_rpc("ps", rank=rank, world_size=world_size)
+        # parameter server do nothing
+        pass
+
+    # block until all rpcs finish
+    rpc.shutdown()
+
+
+if __name__=="__main__":
+    world_size = 2
+    mp.spawn(run_worker, args=(world_size, ), nprocs=world_size, join=True)
+
+
