@@ -111,7 +111,7 @@ config = {k: globals()[k] for k in config_keys} # will be useful for logging
 rank = 1
 world_size=1
 try:    
-    rank = int(os.environ['RANK'])
+    rank = int(os.environ['LOCAL_RANK'])
     world_size = int(os.environ['WORLD_SIZE'])
 except:
     pass
@@ -400,7 +400,7 @@ def run_worker(rank, world_size):
         rpc.init_rpc("trainer", rank=rank, world_size=world_size)
         run_trainer(rank, world_size)
     else:
-        rpc.init_rpc(f"ps{rank}", rank=rank, world_size=world_size)
+        rpc.init_rpc("ps", rank=rank, world_size=world_size)
         # parameter server do nothing
         pass
 
