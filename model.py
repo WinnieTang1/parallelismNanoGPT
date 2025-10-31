@@ -267,12 +267,12 @@ class GPT(nn.Module):
         pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
 
         # forward the GPT model itself
-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+        tok_emb = self.transformer.wte(idx).to(device=torch.device('cuda:0')) # token embeddings of shape (b, t, n_embd)
+        pos_emb = self.transformer.wpe(pos).to(device=torch.device('cuda:0')) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         i=0
-        for block in self.transformer.h:
-            x = block(x)
+        for block in self.transformer.hlocal:
+            x = block(x.to(device=torch.device('cuda', self.gpuSpread[i])))
             i+=1
 
 
