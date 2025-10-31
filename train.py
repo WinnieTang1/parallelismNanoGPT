@@ -92,7 +92,10 @@ parser.add_argument('--model_parallel', default=1, type=int, metavar='W', help='
 args = parser.parse_args()
 
 for i in range(args.W){
-    rpc.init_rpc(f"worker{i}", backend=None, rank=i, world_size=args.W, rpc_backend_options=None)
+    if i = 1:
+        rpc.init_rpc(f"driver", backend=None, rank=i, world_size=args.W, rpc_backend_options=None)
+    else:
+        rpc.init_rpc(f"worker{i}", backend=None, rank=i, world_size=args.W, rpc_backend_options=None)
 }
 num_gpus = args.W
 
