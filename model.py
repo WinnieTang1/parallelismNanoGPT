@@ -278,7 +278,7 @@ class GPT(nn.Module):
 
         if (self.remoteStatus):
             x = rpc.rpc_sync(self.ps, forwardBlocks, args=(self.remote, x.to(device=torch.device('cpu')), self.spread[i:]))
-        x = self.transformer.ln_f(x)
+        x = self.transformer.ln_f(x.to(device=torch.device('cuda:0')))
         
 
         if targets is not None:
