@@ -133,8 +133,7 @@ def buildBlocks(config,dist):
     modulelist = []
     for i in dist:
         device=torch.device('cuda',i % 4)
-        modulelist = nn.ModuleList([Block(config).to(device)])
-
+        modulelist.append(nn.ModuleList([Block(config).to(device=device)])) 
     return modulelist
 
 def forwardBlocks(list, x, dist):
@@ -150,7 +149,7 @@ def pars_from_list(list):
     pars = []
     for i in list.to_here():
         # pars.append()
-        pars.extend(pars(i))
+        pars.extend(par_rref(i))
     return pars
 
 
@@ -169,7 +168,7 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    n_gpu: int = 4
+    n_gpu: int = 2
 
 class GPT(nn.Module):
 
@@ -201,7 +200,7 @@ class GPT(nn.Module):
         ))
 
         if (local<config.n_layer):
-            self.remote = rpc.remote(self.ps, buildBlocks, args=(config, self.gpuSpread[local:]))
+            self.remote = rpc.remote(self.ps, buildBlocks, args=(config, self.spread[local:]))
             self.remoteStatus = True
         else:
             self.remote = None
@@ -233,7 +232,7 @@ class GPT(nn.Module):
             par_ref.extend(par_rref(i))
 
         if (self.remoteStatus):
-            par_ref.extend(rpc.rpc_sync(self.ps, pars_from_list, args=(self.hRemote,)))
+            par_ref.extend(rpc.rpc_sync(self.ps, pars_from_list, args=(self.remote,)))
         par_ref.extend(par_rref(self.transformer.ln_f))
         par_ref.extend(par_rref(self.lm_head))
         return par_ref
@@ -269,8 +268,14 @@ class GPT(nn.Module):
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
+        i=0
         for block in self.transformer.h:
             x = block(x)
+            i+=1
+
+
+        if (self.remoteStatus):
+            x = rpc.rpc_sync(self.ps, forwardBlocks, args=(self.remote, x.to(device=torch.device('cpu')), self.spread[i:])))
         x = self.transformer.ln_f(x)
         
 
