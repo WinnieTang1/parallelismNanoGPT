@@ -28,10 +28,12 @@ class LayerNorm(nn.Module):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(ndim))
         self.bias = nn.Parameter(torch.zeros(ndim)) if bias else None
-        # for splitting across 2 gpus
+        # for splitting across
         for i in range(num_gpus):
-            torch.cuda.set_device(i)
-            self.layernorm=rpc.remote(torch.cuda.get_device_name(i))
+            if i == 1:
+                self.layernorm=rpc.remote("driver")
+            else:
+                self.layernorm=rpc.remote(f"worker{i}")
 
 
 
@@ -61,8 +63,10 @@ class CausalSelfAttention(nn.Module):
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
         for i in range(num_gpus):
-            torch.cuda.set_device(i)
-            self.csatten=rpc.remote()
+            if i == 1:
+                self.csatten=rpc.remote("driver")
+            else:
+                self.csatten=rpc.remote(f"worker{i}")
 
 
     def forward(self, x):
@@ -100,8 +104,10 @@ class MLP(nn.Module):
         self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
         for i in range(num_gpus):
-            torch.cuda.set_device(i)
-            self.mlp=rpc.remote(torch.cuda.get_device_name(i))
+            if i == 1:
+                self.mlp=rpc.remote("driver")
+            else:
+                self.mlp=rpc.remote(f"worker{i}")
 
     def forward(self, x):
         x = self.c_fc(x)
@@ -119,8 +125,10 @@ class Block(nn.Module):
         self.ln_2 = LayerNorm(config.n_embd, num_gpus, bias=config.bias)
         self.mlp = MLP(config, num_gpus)
         for i in range(num_gpus):
-            torch.cuda.set_device(i)
-            self.block=rpc.remote(torch.cuda.get_device_name(i))
+            if i == 1:
+                self.block=rpc.remote("driver")
+            else:
+                self.block=rpc.remote(f"worker{i}")
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
