@@ -72,8 +72,8 @@ decay_lr = True # whether to decay the learning rate
 warmup_iters = 2000 # how many steps to warm up for
 lr_decay_iters = 600000 # should be ~= max_iters per Chinchilla
 min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
-# DDP settings
-backend = 'nccl' # 'nccl', 'gloo', etc.
+# # DDP settings NOT USING IT BECAUSE DDP IS NOT APPLICABLE
+# backend = 'nccl' # 'nccl', 'gloo', etc.
 # system
 device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
@@ -108,16 +108,13 @@ config = {k: globals()[k] for k in config_keys} # will be useful for logging
 #     world_size = 2
 #     mp.spawn(run_worker, args=(world_size,), nprocs=world_size, join=True)
 
-rank = 1
-world_size=1
-try:    
-    rank = int(os.environ['LOCAL_RANK'])
-    world_size = int(os.environ['WORLD_SIZE'])
-except:
-    pass
+
+##trainer
 
 def run_trainer(rank, world_size):
     seed_offset = 0
+    torch.manual_seed(1337 + seed_offset)
+
     tokens_per_iter = gradient_accumulation_steps  * batch_size * block_size
     print(f"tokens per iteration will be: {tokens_per_iter:,}")
     
@@ -129,7 +126,6 @@ def run_trainer(rank, world_size):
     if master_process:
         os.makedirs(out_dir, exist_ok=True)
 
-    torch.manual_seed(1337 + seed_offset)
     torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
     torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
     device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.autocast
@@ -285,9 +281,8 @@ def run_trainer(rank, world_size):
     local_iter_num = 0 # number of iterations in the lifetime of this process
     raw_model = model #.module if ddp else model # unwrap DDP container if needed
     running_mfu = -1.0
-    while True:
-
-    # determine and set the learning rate for this iteration
+    
+    while True:# determine and set the learning rate for this iteration
         # lr = get_lr(iter_num) if decay_lr else learning_rate
         # for param_group in optimizer.param_groups:
         #     param_group['lr'] = lr
@@ -386,7 +381,14 @@ def run_trainer(rank, world_size):
             break
 
 
-
+# initialize rank and world size
+rank = 1
+world_size=1
+try:    
+    rank = int(os.environ['RANK'])
+    world_size = int(os.environ['WORLD_SIZE'])
+except:
+    pass
 
 # if ddp:
 #     destroy_process_group()
@@ -411,6 +413,7 @@ def run_worker(rank, world_size):
 # if __name__=="__main__":
 #     world_size = 2
 #     mp.spawn(run_worker, args=(world_size, ), nprocs=world_size, join=True)
+
 
 run_worker(rank, world_size)
 

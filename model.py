@@ -123,19 +123,14 @@ class Block(nn.Module):
         return x
 
 # I REALLY HOPE THIS WORKS
-def par_rref(block):
-    pars = []
-    for i in block.parameters():
-        pars.append(rpc.RRef(i))
-    return pars
 
-def buildBlocks(config,dist):
+def buildBlocks(config, dist):
     # modulelist = []
     # for i in dist:
     #     device=torch.device('cuda',i % 4)
     #     modulelist.append(nn.ModuleList([Block(config).to(device=device)])) 
     # return modulelist
-    return nn.ModuleList([Block(config).to(device=torch.device('cuda', i%4)) for i in dist])
+    return nn.ModuleList([Block(config).to(device=torch.device('cuda', ord%4)) for ord in dist])
 
 
 def forwardBlocks(list, x, dist):
@@ -149,16 +144,16 @@ def forwardBlocks(list, x, dist):
 
 def pars_from_list(list):
     pars = []
-    for i in list.to_here():
+    for block in list.to_here():
         # pars.append()
-        pars.extend(par_rref(i))
+        pars.extend(par_rref(block))
     return pars
 
-
-
-
-
-
+def par_rref(block):
+    pars_rref = []
+    for par in block.parameters():
+        pars_rref.append(rpc.RRef(par))
+    return pars_rref
 
 
 @dataclass
@@ -168,9 +163,9 @@ class GPTConfig:
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
+    n_gpus: int = 2
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    n_gpu: int = 2
 
 class GPT(nn.Module):
 
@@ -180,12 +175,9 @@ class GPT(nn.Module):
         assert config.block_size is not None
         self.config = config
 
-
-
-        numlayer = range(config.n_layer)
-        self.spread = list(map(lambda i: int(i*config.n_gpu/config.n_layer), numlayer))
-        local = 4*config.n_layer//config.n_gpu
-
+        # numlayer = range(config.n_layer)
+        self.spread = list(map(lambda i: int(i*config.n_gpus/config.n_layer), range(config.n_layer)))
+        local = 4*config.n_layer//config.n_gpus
         self.ps = ps
 
 
@@ -208,7 +200,7 @@ class GPT(nn.Module):
             self.remote = None
             self.remoteStatus = False
 
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False).to('cuda:0')
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
@@ -230,8 +222,8 @@ class GPT(nn.Module):
         par_refs.extend(par_rref(self.transformer.wte))
         par_refs.extend(par_rref(self.transformer.wpe))
         par_refs.extend(par_rref(self.transformer.drop))
-        for i in self.transformer.hlocal:
-            par_refs.extend(par_rref(i))
+        for block in self.transformer.hlocal:
+            par_refs.extend(par_rref(block))
 
         if (self.remoteStatus):
             par_refs.extend(rpc.rpc_sync(self.ps, pars_from_list, args=(self.remote,)))
@@ -261,24 +253,25 @@ class GPT(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, targets=None):
+        
         device = torch.device('cuda:0')
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
         pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
 
         # forward the GPT model itself
-        tok_emb = self.transformer.wte(idx).to(device=torch.device('cuda:0')) # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(pos).to(device=torch.device('cuda:0')) # position embeddings of shape (t, n_embd)
+        tok_emb = self.transformer.wte(idx).to(device=device) # token embeddings of shape (b, t, n_embd)
+        pos_emb = self.transformer.wpe(pos).to(device=device) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         i=0
         for block in self.transformer.hlocal:
-            x = block(x.to(device=torch.device('cuda', self.gpuSpread[i])))
+            x = block(x.to(device=torch.device('cuda', self.spread[i])))
             i+=1
 
 
         if (self.remoteStatus):
             x = rpc.rpc_sync(self.ps, forwardBlocks, args=(self.remote, x.to(device=torch.device('cpu')), self.spread[i:]))
-        x = self.transformer.ln_f(x.to(device=torch.device('cuda:0')))
+        x = self.transformer.ln_f(x.to(device=device))
         
 
         if targets is not None:
